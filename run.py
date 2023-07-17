@@ -10,6 +10,7 @@ import multiprocessing as mp
 import os
 import pickle
 from typing import Union, Tuple, List, Any, Optional, TypeVar, Dict
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from baukit import Trace
 from datasets import Dataset, DatasetDict, load_dataset
@@ -349,26 +350,57 @@ def generate_corr_matrix(num_feats: int, device: Union[torch.device, str]) -> Te
 
 
 # AutoEncoder Definition
+# class AutoEncoder(nn.Module):
+#     def __init__(self, activation_size, n_dict_components, t_type=torch.float32, l1_coef=0.0):
+#         super(AutoEncoder, self).__init__()
+#         self.decoder = nn.Linear(n_dict_components, activation_size, bias=True)
+#         # Initialize the decoder weights orthogonally
+#         nn.init.orthogonal_(self.decoder.weight)
+#         self.decoder = self.decoder.to(t_type)
+
+#         self.encoder = nn.Sequential(nn.Linear(activation_size, n_dict_components).to(t_type), nn.ReLU())
+#         self.l1_coef = l1_coef
+#         self.activation_size = activation_size
+#         self.n_dict_components = n_dict_components
+
+#     def forward(self, x):
+#         c = self.encoder(x)
+#         # Apply unit norm constraint to the decoder weights
+#         self.decoder.weight.data = nn.functional.normalize(self.decoder.weight.data, dim=0)
+
+#         x_hat = self.decoder(c)
+#         return x_hat, c
 class AutoEncoder(nn.Module):
     def __init__(self, activation_size, n_dict_components, t_type=torch.float32, l1_coef=0.0):
         super(AutoEncoder, self).__init__()
-        self.decoder = nn.Linear(n_dict_components, activation_size, bias=False)
+        
+        # Only defining the decoder layer, encoder will share its weights
+        self.decoder = nn.Linear(n_dict_components, activation_size, bias=True)
+        # Create a bias layer
+        self.encoder_bias= nn.Parameter(torch.zeros(n_dict_components))
+
+        
         # Initialize the decoder weights orthogonally
         nn.init.orthogonal_(self.decoder.weight)
         self.decoder = self.decoder.to(t_type)
 
-        self.encoder = nn.Sequential(nn.Linear(activation_size, n_dict_components).to(t_type), nn.ReLU())
+        # Encoder is a Sequential with the ReLU activation
+        # No need to define a Linear layer for the encoder as its weights are tied with the decoder
+        self.encoder = nn.Sequential(nn.ReLU()).to(t_type)
+
         self.l1_coef = l1_coef
         self.activation_size = activation_size
         self.n_dict_components = n_dict_components
 
     def forward(self, x):
-        c = self.encoder(x)
+        c = self.encoder(x @ self.decoder.weight + self.encoder_bias)
         # Apply unit norm constraint to the decoder weights
         self.decoder.weight.data = nn.functional.normalize(self.decoder.weight.data, dim=0)
 
+        # Decoding step as before
         x_hat = self.decoder(c)
         return x_hat, c
+
 
     @property
     def device(self):
@@ -729,17 +761,24 @@ def run_with_real_data(cfg, auto_encoder: AutoEncoder, completed_batches: int = 
         chunk_order = np.random.permutation(n_chunks_in_folder)
         for chunk_ndx, chunk_id in enumerate(chunk_order):
             chunk_loc = os.path.join(cfg.dataset_folder, f"{chunk_id}.pkl")
-            dataset = DataLoader(pickle.load(open(chunk_loc, "rb")), batch_size=cfg.batch_size, shuffle=True)
+            dataset = DataLoader(pickle.load(open(chunk_loc, "rb")), batch_size=cfg.batch_size, shuffle=False)
             for batch_idx, batch in enumerate(dataset):
                 n_batches += 1
                 batch = batch[0].to(cfg.device).to(torch.float32)
                 optimizer.zero_grad()
                 # Run through auto_encoder
 
+                # x_hat, dict_levels = auto_encoder(batch + cfg.l1_alpha * torch.randn_like(batch)) #TODO change noise thing
                 x_hat, dict_levels = auto_encoder(batch)
                 l_reconstruction = torch.nn.MSELoss()(batch, x_hat)
                 l_l1 = cfg.l1_alpha * torch.norm(dict_levels, 1, dim=1).mean()
+                # l_l1 = cfg.l1_alpha * torch.norm(dict_levels, 0.5, dim=1).mean() # l0.5
+                # l_l1 = cfg.l1_alpha * (torch.norm(dict_levels, 1, dim=1).mean() / torch.norm(dict_levels, 2, dim=1).mean()) # l2/l1
+                # exp_x = torch.exp(dict_levels)
+                # tanh = (exp_x - 1/exp_x) / (exp_x + 1/exp_x)
+                # l_l1 = cfg.l1_alpha*tanh.sum(dim=1).mean()
                 loss = l_reconstruction + l_l1
+                # loss = l_reconstruction
                 loss.backward()
                 optimizer.step()
 
@@ -769,7 +808,7 @@ def run_with_real_data(cfg, auto_encoder: AutoEncoder, completed_batches: int = 
                     feature_angle_shift = check_feature_movement(old_dict, new_dict)
                     old_dict = new_dict
 
-                    momentum_mag = get_size_of_momentum(cfg, optimizer)
+                    # momentum_mag = get_size_of_momentum(cfg, optimizer)
 
 
                     print(
@@ -783,7 +822,7 @@ def run_with_real_data(cfg, auto_encoder: AutoEncoder, completed_batches: int = 
                                 f"{wb_tag}.reconstruction_loss": running_recon_loss,
                                 f"{wb_tag}.l1_loss": l_l1,
                                 f"{wb_tag}.feature_angle_shift": feature_angle_shift,
-                                f"{wb_tag}.momentum_mag": momentum_mag,
+                                # f"{wb_tag}.momentum_mag": momentum_mag,
                                 f"{wb_tag}.sparsity": sparsity,
                                 f"{wb_tag}.dead_features": np.count_nonzero(feature_activations==0),
                                 f"total_steps": completed_batches + n_batches,
@@ -819,7 +858,7 @@ def make_activation_dataset(cfg, sentence_dataset: DataLoader, model: HookedTran
                     _ = model(batch)
                     mlp_activation_data = ret.output
                     mlp_activation_data = rearrange(mlp_activation_data, "b s n -> (b s) n").to(torch.float16).to(cfg.device)
-                    mlp_activation_data = nn.functional.gelu(mlp_activation_data)
+                    # mlp_activation_data = nn.functional.gelu(mlp_activation_data)
             else:
                 _, cache = model.run_with_cache(batch)
                 mlp_activation_data = cache[tensor_name].to(cfg.device).to(torch.float16)  # NOTE: could do all layers at once, but currently just doing 1 layer
@@ -847,7 +886,7 @@ def save_activation_chunk(dataset, n_saved_chunks, cfg):
     
 
 
-def run_mmcs_with_larger(cfg, learned_dicts, threshold=0.9):
+def run_mmcs_with_larger(cfg, learned_dicts, threshold=0.8):
     n_l1_coefs, n_dict_sizes = len(learned_dicts), len(learned_dicts[0])
     av_mmcs_with_larger_dicts = np.zeros((n_l1_coefs, n_dict_sizes))
     feats_above_threshold = np.zeros((n_l1_coefs, n_dict_sizes))
@@ -922,9 +961,10 @@ def setup_data(cfg, tokenizer, model, use_baukit=False, start_line=0):
 
 def run_real_data_model(cfg: dotdict):
     # cfg.model_name = "EleutherAI/pythia-70m-deduped"
-    if cfg.model_name in ["gpt2", "EleutherAI/pythia-70m-deduped"]:
-        model = HookedTransformer.from_pretrained(cfg.model_name, device=cfg.device)
-        use_baukit = False
+    if cfg.model_name in ["gpt2", "EleutherAI/pythia-70m-deduped", "EleutherAI/pythia-1.4b-deduped", "EleutherAI/pythia-12b-deduped"]:
+        # model = HookedTransformer.from_pretrained(cfg.model_name, device=cfg.device)
+        model = AutoModelForCausalLM.from_pretrained(cfg.model_name).to(cfg.device)
+        use_baukit = True
     elif cfg.model_name == "nanoGPT":
         model_dict = torch.load(open(cfg.model_path, "rb"), map_location="cpu")["model"]
         model_dict = {k.replace("_orig_mod.", ""): v for k, v in model_dict.items()}
@@ -940,8 +980,9 @@ def run_real_data_model(cfg: dotdict):
     if hasattr(model, "tokenizer"):
         tokenizer = model.tokenizer
     else:
-        print("Using default tokenizer from gpt2")
-        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        # print("Using default tokenizer from gpt2")
+        # tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
 
     # Check if we have already run this model and got the activations
     dataset_name = cfg.dataset_name.split("/")[-1] + "-" + cfg.model_name + "-" + str(cfg.layer)
@@ -960,7 +1001,12 @@ def run_real_data_model(cfg: dotdict):
         n_lines = cfg.max_lines
         del dataset
 
-    l1_range = [cfg.l1_exp_base**exp for exp in range(cfg.l1_exp_low, cfg.l1_exp_high)]
+    # l1_range = [cfg.l1_exp_base**exp for exp in range(cfg.l1_exp_low, cfg.l1_exp_high)]
+    # l1_range = [.000002, .000004, .000006, .000008, .00001, .00003, .00005, .00007, .00009]
+    # l1_range = [.002, .004, .005, .006, .007, .008]
+    # l1_range = [0.0015, 0.002, 0.0025, 0.003]
+    l1_range = [.003]
+    # l1_range = [0.00008, 0.0001, 0.0003, 0.0006]
     dict_ratios = [cfg.dict_ratio_exp_base**exp for exp in range(cfg.dict_ratio_exp_low, cfg.dict_ratio_exp_high)]
     dict_sizes = [int(cfg.mlp_width * ratio) for ratio in dict_ratios]
 
@@ -989,7 +1035,7 @@ def run_real_data_model(cfg: dotdict):
 
     learned_dicts: List[List[Optional[torch.Tensor]]] = [[None for _ in range(len(dict_sizes))] for _ in range(len(l1_range))]
 
-    start_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+    start_time = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{cfg.model_name}-{cfg.layer}"
     outputs_folder = os.path.join(cfg.outputs_folder, start_time)
     os.makedirs(outputs_folder, exist_ok=True)
     if cfg.use_wandb:
