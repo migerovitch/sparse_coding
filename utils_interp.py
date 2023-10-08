@@ -117,7 +117,7 @@ def download_dataset(dataset_name, tokenizer, max_length=256, num_datapoints=Non
     return dataset
 
 
-def ablate_feature_direction(model, dataset, cache_name, max_seq_length, autoencoder, feature, batch_size=32, setting="full_dataset"):
+def ablate_feature_direction(model, dataset, cache_name, max_seq_length, autoencoder, feature, batch_size=32, setting="full_dataset", model_type="causal"):
     device = model.device
     def less_than_rank_1_ablate(value):
         if(isinstance(value, tuple)):
@@ -143,22 +143,28 @@ def ablate_feature_direction(model, dataset, cache_name, max_seq_length, autoenc
             return_value = internal_activation
         return return_value
 
-    if(setting=="sentences"):
+    if(setting == "sentences"):
         dataset = torch.stack(dataset)
         logit_diffs = torch.zeros_like(dataset)
         with torch.no_grad():
             dataset = dataset.to(device)
-            original_logits = model(dataset).logits.log_softmax(dim=-1)
+            original_logits = model(dataset).logits
             with Trace(model, cache_name, edit_output=less_than_rank_1_ablate) as ret:
-                ablated_logits = model(dataset).logits.log_softmax(dim=-1)
-            diff_logits = ablated_logits  - original_logits# ablated > original -> negative diff
-            gather_tokens = rearrange(dataset[:,1:].to(device), "b s -> b s 1")
-            gathered = diff_logits[:, :-1].gather(-1,gather_tokens)
-            # append all 0's to the beggining of gathered
-            gathered = torch.cat([torch.zeros((gathered.shape[0],1,1)).to(device), gathered], dim=1)
-            diff = rearrange(gathered, "b s 1 -> b s")
-            logit_diffs =  diff.cpu().tolist()
-    else:         
+                ablated_logits = model(dataset).logits
+            if(model_type=="causal"):
+                diff_logits = ablated_logits.log_softmax(dim=-1)  - original_logits.log_softmax(dim=-1)  # ablated > original -> negative diff
+                gather_tokens = rearrange(dataset[:,1:].to(device), "b s -> b s 1")
+                gathered = diff_logits[:, :-1].gather(-1,gather_tokens)
+                # append all 0's to the beggining of gathered
+                gathered = torch.cat([torch.zeros((gathered.shape[0],1,1)).to(device), gathered], dim=1)
+                diff = rearrange(gathered, "b s 1 -> b s")
+                logit_diffs =  diff.cpu().tolist()
+            else: # reward model/ Sequence classification
+                diff_logits = ablated_logits - original_logits
+                logit_diffs = diff_logits.cpu()
+    else: # full dataset (expensive)
+        # ETA: does not support reward model
+        assert model_type=="causal", "full dataset only supports causal models"
         datapoints = dataset.num_rows
         logit_diffs = torch.zeros((datapoints*max_seq_length))
         with torch.no_grad(), dataset.formatted_as("pt"):
@@ -168,7 +174,6 @@ def ablate_feature_direction(model, dataset, cache_name, max_seq_length, autoenc
                 original_logits = model(batch).logits.log_softmax(dim=-1)
                 with Trace(model, cache_name, edit_output=less_than_rank_1_ablate) as ret:
                     ablated_logits = model(batch).logits.log_softmax(dim=-1)
-                # ablated_logits = model.run_with_hooks(batch, fwd_hooks=[(cache_name, less_than_rank_1_ablate)]).log_softmax(dim=-1)
                 diff_logits = ablated_logits  - original_logits# ablated > original -> negative diff
                 gather_tokens = rearrange(batch[:,1:].to(device), "b s -> b s 1")
                 gathered = diff_logits[:, :-1].gather(-1,gather_tokens)
@@ -229,7 +234,7 @@ def convert_token_array_to_list(array):
             array = [array]
     return array
 
-def tokens_and_activations_to_html(toks, activations, tokenizer, logit_diffs=None):
+def tokens_and_activations_to_html(toks, activations, tokenizer, logit_diffs=None, model_type="causal"):
     # text_spacing = "0.07em"
     text_spacing = "0.00em"
     toks = convert_token_array_to_list(toks)
@@ -244,40 +249,47 @@ def tokens_and_activations_to_html(toks, activations, tokenizer, logit_diffs=Non
 """)
     max_value = max([max(activ) for activ in activations])
     min_value = min([min(activ) for activ in activations])
-    if(logit_diffs is not None):
+    if(logit_diffs is not None and model_type != "reward_model"):
         logit_max_value = max([max(activ) for activ in logit_diffs])
         logit_min_value = min([min(activ) for activ in logit_diffs])
 
     # Add color bar
     highlighted_text.append("Token Activations: " + make_colorbar(min_value, max_value))
-    if(logit_diffs is not None):
+    if(logit_diffs is not None and model_type != "reward_model"):
         highlighted_text.append('<div style="margin-top: 0.1em;"></div>')
         highlighted_text.append("Logit Diff: " + make_colorbar(logit_min_value, logit_max_value))
     
     highlighted_text.append('<div style="margin-top: 0.5em;"></div>')
     for seq_ind, (act, tok) in enumerate(zip(activations, toks)):
         for act_ind, (a, t) in enumerate(zip(act, tok)):
-            if(logit_diffs is not None):
+            if(logit_diffs is not None and model_type != "reward_model"):
                 highlighted_text.append('<div style="display: inline-block;">')
             text_color, background_color = value_to_color(a, max_value, min_value)
             highlighted_text.append(f'<span style="background-color:{background_color};margin-right: {text_spacing}; color:rgb({text_color})">{t.replace(" ", "&nbsp")}</span>')
-            if(logit_diffs is not None):
+            if(logit_diffs is not None and model_type != "reward_model"):
                 logit_diffs_act = logit_diffs[seq_ind][act_ind]
                 _, logit_background_color = value_to_color(logit_diffs_act, logit_max_value, logit_min_value)
                 highlighted_text.append(f'<div style="display: block; margin-right: {text_spacing}; height: 10px; background-color:{logit_background_color}; text-align: center;"></div></div>')
+        if(model_type=="reward_model"):
+            reward_change = logit_diffs[seq_ind].item()
+            text_color, background_color = value_to_color(reward_change, 10, -10)
+            highlighted_text.append(f'<br><span>Reward: </span><span style="background-color:{background_color};margin-right: {text_spacing}; color:rgb({text_color})">{reward_change:.2f}</span>')
         highlighted_text.append('<div style="margin-top: 0.2em;"></div>')
         # highlighted_text.append('<br><br>')
     # highlighted_text.append('</body>')
     highlighted_text = ''.join(highlighted_text)
     return highlighted_text
 
-def display_tokens(tokens, activations, tokenizer, logit_diffs=None):
-    return display(HTML(tokens_and_activations_to_html(tokens, activations, tokenizer, logit_diffs)))
+# Deprecated
+# def display_tokens(tokens, activations, tokenizer, logit_diffs=None):
+#     return display(HTML(tokens_and_activations_to_html(tokens, activations, tokenizer, logit_diffs)))
 
-def save_token_display(tokens, activations, tokenizer, path, logit_diffs=None):
-    html = tokens_and_activations_to_html(tokens, activations, tokenizer, logit_diffs)
-    imgkit.from_string(html, path)
-    # print(f"Saved to {path}")
+def save_token_display(tokens, activations, tokenizer, path, save=True, logit_diffs=None, show=False, model_type="causal"):
+    html = tokens_and_activations_to_html(tokens, activations, tokenizer, logit_diffs, model_type=model_type)
+    if(save):
+        imgkit.from_string(html, path)
+    if(show):
+        return display(HTML(html))
     return
 
 def get_feature_indices(feature_index, dictionary_activations, k=10, setting="max"):
