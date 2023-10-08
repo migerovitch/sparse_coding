@@ -17,6 +17,67 @@ import os
 
 from IPython.display import display, HTML
 import imgkit
+from PIL import Image, ImageDraw
+
+def combine_images(feature, save_path = "features/", setting="both"):
+    if(setting =="input_only"):
+        img1 = Image.open(f"features/feature_{feature}_input_combined.png")
+        img3 = Image.open(f"features/uniform_{feature}.png")
+        original_width = img3.width
+
+        # Resize images if you need to
+        image_scalar = original_width/img1.width 
+        img1 = img1.resize((int(img1.width*image_scalar), int(img1.height*image_scalar)))
+
+        # Determine dimensions for the new concatenated image
+        new_width = max(img1.width, img3.width)
+        new_height = img1.height + img3.height
+
+        # Create a new image with a white background
+        new_img = Image.new("RGB", (new_width, new_height), "white")
+
+        # Paste the images
+        new_img.paste(img1, (0, 0))
+        new_img.paste(img3, (0, img1.height))
+        # Now delete the old images
+        os.remove(f"{save_path}feature_{feature}_input_combined.png")
+        os.remove(f"{save_path}uniform_{feature}.png")
+    else: # Both
+        # Load the images
+        # feature = 1
+        img1 = Image.open(f"features/feature_{feature}_input_combined.png")
+        img2 = Image.open(f"features/feature_{feature}_logit_diff_combined.png")
+        img3 = Image.open(f"features/uniform_{feature}.png")
+
+        original_width = img3.width
+
+        # Resize images if you need to
+        image_scalar = original_width/img1.width 
+        img1 = img1.resize((int(img1.width*image_scalar), int(img1.height*image_scalar)))
+        img2 = img2.resize((int(img2.width*image_scalar), int(img2.height*image_scalar)))
+
+        # Determine dimensions for the new concatenated image
+        new_width = max(img1.width, img3.width)
+        new_height = img1.height + img2.height + img3.height
+
+        # Create a new image with a white background
+        new_img = Image.new("RGB", (new_width, new_height), "white")
+
+        # Paste the images
+        new_img.paste(img1, (0, 0))
+        new_img.paste(img2, (0, img1.height))
+        new_img.paste(img3, (0, img1.height + img2.height))
+        # draw = ImageDraw.Draw(new_img)
+
+        # Now delete the old images
+        os.remove(f"{save_path}feature_{feature}_input_combined.png")
+        os.remove(f"{save_path}feature_{feature}_logit_diff_combined.png")
+        os.remove(f"{save_path}uniform_{feature}.png")
+    # Make directory if it doesn't exist
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    new_img.save(f"{save_path}{feature}_{setting}_concatenated_image.png")
+    return new_img.show()
 
 def get_dictionary_activations(model, dataset, cache_name, max_seq_length, autoencoder, batch_size=32):
     device = model.device
@@ -55,7 +116,8 @@ def download_dataset(dataset_name, tokenizer, max_length=256, num_datapoints=Non
     )
     return dataset
 
-def ablate_feature_direction(model, dataset, cache_name, max_seq_length, autoencoder, feature, batch_size=32):
+
+def ablate_feature_direction(model, dataset, cache_name, max_seq_length, autoencoder, feature, batch_size=32, setting="full_dataset"):
     device = model.device
     def less_than_rank_1_ablate(value):
         if(isinstance(value, tuple)):
@@ -81,32 +143,40 @@ def ablate_feature_direction(model, dataset, cache_name, max_seq_length, autoenc
             return_value = internal_activation
         return return_value
 
-# with Trace(model, cache_name, edit_output=less_than_rank_1_ablate) as ret:
-#     _ = model(batch).logits
-#     representation = ret.output
-#     # check if instance tuple
-#     if(isinstance(representation, tuple)):
-#         representation = representation[0]
-    
-
-    datapoints = dataset.num_rows
-    logit_diffs = torch.zeros((datapoints*max_seq_length))
-    with torch.no_grad(), dataset.formatted_as("pt"):
-        dl = DataLoader(dataset["input_ids"], batch_size=batch_size)
-        for i, batch in enumerate(tqdm(dl)):
-            batch = batch.to(device)
-            original_logits = model(batch).logits.log_softmax(dim=-1)
+    if(setting=="sentences"):
+        dataset = torch.stack(dataset)
+        logit_diffs = torch.zeros_like(dataset)
+        with torch.no_grad():
+            dataset = dataset.to(device)
+            original_logits = model(dataset).logits.log_softmax(dim=-1)
             with Trace(model, cache_name, edit_output=less_than_rank_1_ablate) as ret:
-                ablated_logits = model(batch).logits.log_softmax(dim=-1)
-            # ablated_logits = model.run_with_hooks(batch, fwd_hooks=[(cache_name, less_than_rank_1_ablate)]).log_softmax(dim=-1)
+                ablated_logits = model(dataset).logits.log_softmax(dim=-1)
             diff_logits = ablated_logits  - original_logits# ablated > original -> negative diff
-            gather_tokens = rearrange(batch[:,1:].to(device), "b s -> b s 1")
+            gather_tokens = rearrange(dataset[:,1:].to(device), "b s -> b s 1")
             gathered = diff_logits[:, :-1].gather(-1,gather_tokens)
             # append all 0's to the beggining of gathered
             gathered = torch.cat([torch.zeros((gathered.shape[0],1,1)).to(device), gathered], dim=1)
-            diff = rearrange(gathered, "b s n -> (b s n)")
-            # Add one to the first position of logit diff, so we're always skipping over the first token (since it's not predicted)
-            logit_diffs[i*batch_size*max_seq_length:(i+1)*batch_size*max_seq_length] = diff.cpu()
+            diff = rearrange(gathered, "b s 1 -> b s")
+            logit_diffs =  diff.cpu().tolist()
+    else:         
+        datapoints = dataset.num_rows
+        logit_diffs = torch.zeros((datapoints*max_seq_length))
+        with torch.no_grad(), dataset.formatted_as("pt"):
+            dl = DataLoader(dataset["input_ids"], batch_size=batch_size)
+            for i, batch in enumerate(tqdm(dl)):
+                batch = batch.to(device)
+                original_logits = model(batch).logits.log_softmax(dim=-1)
+                with Trace(model, cache_name, edit_output=less_than_rank_1_ablate) as ret:
+                    ablated_logits = model(batch).logits.log_softmax(dim=-1)
+                # ablated_logits = model.run_with_hooks(batch, fwd_hooks=[(cache_name, less_than_rank_1_ablate)]).log_softmax(dim=-1)
+                diff_logits = ablated_logits  - original_logits# ablated > original -> negative diff
+                gather_tokens = rearrange(batch[:,1:].to(device), "b s -> b s 1")
+                gathered = diff_logits[:, :-1].gather(-1,gather_tokens)
+                # append all 0's to the beggining of gathered
+                gathered = torch.cat([torch.zeros((gathered.shape[0],1,1)).to(device), gathered], dim=1)
+                diff = rearrange(gathered, "b s n -> (b s n)")
+                # Add one to the first position of logit diff, so we're always skipping over the first token (since it's not predicted)
+                logit_diffs[i*batch_size*max_seq_length:(i+1)*batch_size*max_seq_length] = diff.cpu()
     return logit_diffs
 
 
@@ -174,24 +244,24 @@ def tokens_and_activations_to_html(toks, activations, tokenizer, logit_diffs=Non
 """)
     max_value = max([max(activ) for activ in activations])
     min_value = min([min(activ) for activ in activations])
-    if(logit_diffs):
+    if(logit_diffs is not None):
         logit_max_value = max([max(activ) for activ in logit_diffs])
         logit_min_value = min([min(activ) for activ in logit_diffs])
 
     # Add color bar
     highlighted_text.append("Token Activations: " + make_colorbar(min_value, max_value))
-    if(logit_diffs):
+    if(logit_diffs is not None):
         highlighted_text.append('<div style="margin-top: 0.1em;"></div>')
         highlighted_text.append("Logit Diff: " + make_colorbar(logit_min_value, logit_max_value))
     
     highlighted_text.append('<div style="margin-top: 0.5em;"></div>')
     for seq_ind, (act, tok) in enumerate(zip(activations, toks)):
         for act_ind, (a, t) in enumerate(zip(act, tok)):
-            if(logit_diffs):
+            if(logit_diffs is not None):
                 highlighted_text.append('<div style="display: inline-block;">')
             text_color, background_color = value_to_color(a, max_value, min_value)
             highlighted_text.append(f'<span style="background-color:{background_color};margin-right: {text_spacing}; color:rgb({text_color})">{t.replace(" ", "&nbsp")}</span>')
-            if(logit_diffs):
+            if(logit_diffs is not None):
                 logit_diffs_act = logit_diffs[seq_ind][act_ind]
                 _, logit_background_color = value_to_color(logit_diffs_act, logit_max_value, logit_min_value)
                 highlighted_text.append(f'<div style="display: block; margin-right: {text_spacing}; height: 10px; background-color:{logit_background_color}; text-align: center;"></div></div>')
