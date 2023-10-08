@@ -3,6 +3,7 @@ import importlib
 import itertools
 import json
 import math
+import random
 import multiprocessing as mp
 import os
 import pickle
@@ -460,8 +461,18 @@ def setup_data(
         return n_datapoints
 
 
-def setup_token_data(cfg, tokenizer, model):
+def setup_token_data(cfg, tokenizer, model, seed=1):
     sentence_dataset = make_sentence_dataset(cfg.dataset_name)
     tokenized_sentence_dataset, bits_per_byte = chunk_and_tokenize(sentence_dataset, tokenizer, max_length=cfg.max_length)
-    token_loader = DataLoader(tokenized_sentence_dataset, batch_size=cfg.model_batch_size, shuffle=True)
+
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    np.random.seed(seed)
+
+    token_loader = DataLoader(
+        tokenized_sentence_dataset, 
+        batch_size=cfg.model_batch_size, 
+        shuffle=True,
+        )
     return token_loader

@@ -119,6 +119,35 @@ class UntiedSAE(LearnedDict):
         c = c + self.encoder_bias
         c = torch.clamp(c, min=0.0)
         return c
+    
+class AnthropicSAE(LearnedDict):
+    def __init__(self, encoder, decoder, encoder_bias, shift_bias):
+        self.encoder = encoder
+        self.decoder = decoder
+        self.encoder_bias = encoder_bias
+        self.shift_bias = shift_bias
+        self.n_feats, self.activation_size = self.encoder.shape
+
+    def get_learned_dict(self):
+        norms = torch.norm(self.decoder, 2, dim=-1)
+        return self.decoder / torch.clamp(norms, 1e-8)[:, None]
+
+    def to_device(self, device):
+        self.encoder = self.encoder.to(device)
+        self.decoder = self.decoder.to(device)
+        self.encoder_bias = self.encoder_bias.to(device)
+
+    def encode(self, batch):
+        batch = batch - self.shift_bias
+        c = torch.einsum("nd,bd->bn", self.encoder, batch)
+        c = c + self.encoder_bias
+        c = torch.clamp(c, min=0.0)
+        return c
+    
+    def decode(self, code):
+        learned_dict = self.get_learned_dict()
+        x_hat = torch.einsum("nd,bn->bd", learned_dict, code)
+        return x_hat + self.shift_bias
 
 
 class TiedSAE(LearnedDict):
