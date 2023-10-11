@@ -114,6 +114,11 @@ class UntiedSAE(LearnedDict):
         self.decoder = self.decoder.to(device)
         self.encoder_bias = self.encoder_bias.to(device)
 
+    def set_grad(self):
+        self.encoder.requires_grad = True
+        self.encoder_bias.requires_grad = True
+        self.decoder.requires_grad = True
+
     def encode(self, batch):
         c = torch.einsum("nd,bd->bn", self.encoder, batch)
         c = c + self.encoder_bias
@@ -136,6 +141,14 @@ class AnthropicSAE(LearnedDict):
         self.encoder = self.encoder.to(device)
         self.decoder = self.decoder.to(device)
         self.encoder_bias = self.encoder_bias.to(device)
+        self.shift_bias = self.shift_bias.to(device)
+        
+    def set_grad(self):
+        self.encoder.requires_grad = True
+        self.encoder_bias.requires_grad = True
+        self.shift_bias.requires_grad = True
+        
+        self.decoder.requires_grad = True
 
     def encode(self, batch):
         batch = batch - self.shift_bias
@@ -148,6 +161,51 @@ class AnthropicSAE(LearnedDict):
         learned_dict = self.get_learned_dict()
         x_hat = torch.einsum("nd,bn->bd", learned_dict, code)
         return x_hat + self.shift_bias
+
+class TransferSAE(LearnedDict):
+    def __init__(self, autoencoder, decoder, decoder_bias):
+        self.encoder = autoencoder.encoder
+        self.encoder_bias = autoencoder.encoder_bias
+        self.shift_bias = autoencoder.shift_bias
+        self.n_feats, self.activation_size = self.encoder.shape
+        
+        self.decoder = decoder
+        self.decoder_bias = decoder_bias
+        
+
+    def get_learned_dict(self):
+        norms = torch.norm(self.decoder, 2, dim=-1)
+        return self.decoder / torch.clamp(norms, 1e-8)[:, None]
+    
+    def get_feature_scales(self):
+        norms = torch.norm(self.decoder, 2, dim=-1)
+        return norms
+
+    def to_device(self, device):
+        self.encoder = self.encoder.to(device)
+        self.decoder = self.decoder.to(device)
+        self.encoder_bias = self.encoder_bias.to(device)
+        self.shift_bias = self.shift_bias.to(device)
+        self.decoder_bias = self.decoder_bias.to(device)
+    
+    def set_grad(self):
+        self.encoder.requires_grad = False
+        self.encoder_bias.requires_grad = False
+        self.shift_bias.requires_grad = False
+        
+        self.decoder.requires_grad = True
+        self.decoder_bias.requires_grad = True
+
+    def encode(self, batch):
+        batch = batch - self.shift_bias
+        c = torch.einsum("nd,bd->bn", self.encoder, batch)
+        c = c + self.encoder_bias
+        c = torch.clamp(c, min=0.0)
+        return c
+    
+    def decode(self, code):
+        x_hat = torch.einsum("nd,bn->bd", self.decoder, code)
+        return x_hat + self.decoder_bias
 
 
 class TiedSAE(LearnedDict):
@@ -164,6 +222,10 @@ class TiedSAE(LearnedDict):
     def to_device(self, device):
         self.encoder = self.encoder.to(device)
         self.encoder_bias = self.encoder_bias.to(device)
+
+    def set_grad(self):
+        self.encoder.requires_grad = True
+        self.encoder_bias.requires_grad = True
 
     def encode(self, batch):
         if self.norm_encoder:
