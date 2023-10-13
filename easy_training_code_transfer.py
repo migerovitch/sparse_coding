@@ -22,12 +22,12 @@ cfg.target_name="usvsnsp/pythia-6.9b-ppo"
 cfg.layers=[24]
 cfg.setting="residual"
 cfg.tensor_name="gpt_neox.layers.{layer}"
-original_l1_alpha = 5e-3
+original_l1_alpha = 0.8e-4
 cfg.l1_alpha=original_l1_alpha
 cfg.sparsity=None
 cfg.num_epochs=10
-cfg.model_batch_size=4
-cfg.lr=1e-2
+cfg.model_batch_size=8
+cfg.lr=1e-3
 cfg.kl=False
 cfg.reconstruction=False
 # cfg.dataset_name="NeelNanda/pile-10k"
@@ -60,7 +60,6 @@ tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
 # Download the dataset
 # TODO iteratively grab dataset?
 cfg.max_length = 256
-cfg.model_batch_size = 8
 token_loader = setup_token_data(cfg, tokenizer, model, seed=cfg.seed)
 num_tokens = cfg.max_length*cfg.model_batch_size*len(token_loader)
 print(f"Number of tokens: {num_tokens}")
@@ -193,7 +192,7 @@ for i, batch in enumerate(tqdm(token_loader)):
 
     dead_features += c.sum(dim=0).cpu()
     total_activations += c.sum(dim=0).cpu()
-    if (i % 20 == 0): # Check here so first check is model w/o change
+    if (i % 100 == 0): # Check here so first check is model w/o change
         # self_similarity = torch.cosine_similarity(c, last_encoder, dim=-1).mean().cpu().item()
         # Above is wrong, should be similarity between encoder and last encoder
         self_similarity = torch.cosine_similarity(autoencoder.encoder, last_encoder, dim=-1).mean().cpu().item()
@@ -231,6 +230,7 @@ for i, batch in enumerate(tqdm(token_loader)):
         with torch.no_grad():
             # Count number of dead_features are zero
             num_dead_features = (total_activations == 0).sum().item()
+            print(f"Dead Features: {num_dead_features}")
             
         if num_dead_features > 0:
             print("Resampling!")
@@ -324,16 +324,16 @@ for i, batch in enumerate(tqdm(token_loader)):
         
         num_saved_so_far += 1
 
-    # Running sparsity check
-    if(num_tokens_so_far > 200000):
-        if(i % 100 == 0):
-            with torch.no_grad():
-                sparsity = (c != 0).float().mean(dim=0).sum().cpu().item()
-            if sparsity > target_upper_sparsity:
-                cfg.l1_alpha *= (1 + adjustment_factor)
-            elif sparsity < target_lower_sparsity:
-                cfg.l1_alpha *= (1 - adjustment_factor)
-            # print(f"Sparsity: {sparsity:.1f} | l1_alpha: {cfg.l1_alpha:.2e}")
+    # # Running sparsity check
+    # if(num_tokens_so_far > 200000):
+    #     if(i % 100 == 0):
+    #         with torch.no_grad():
+    #             sparsity = (c != 0).float().mean(dim=0).sum().cpu().item()
+    #         if sparsity > target_upper_sparsity:
+    #             cfg.l1_alpha *= (1 + adjustment_factor)
+    #         elif sparsity < target_lower_sparsity:
+    #             cfg.l1_alpha *= (1 - adjustment_factor)
+    #         # print(f"Sparsity: {sparsity:.1f} | l1_alpha: {cfg.l1_alpha:.2e}")
 
 
 # In[24]:
