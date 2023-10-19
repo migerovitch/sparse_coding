@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[44]:
+# In[1]:
 
 
 import torch 
@@ -17,8 +17,8 @@ import matplotlib.pyplot as plt
 
 cfg = dotdict()
 # models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft"
-cfg.model_name="lomahony/eleuther-pythia6.9b-hh-sft"
-cfg.target_name="usvsnsp/pythia-6.9b-ppo"
+cfg.model_name="EleutherAI/pythia-6.9b"
+cfg.target_name="lomahony/eleuther-pythia6.9b-hh-sft"
 cfg.layers=[10]
 cfg.setting="residual"
 cfg.tensor_name="gpt_neox.layers.{layer}"
@@ -38,13 +38,13 @@ cfg.seed = 0
 # cfg.device="cpu"
 
 
-# In[45]:
+# In[2]:
 
 
 tensor_names = [cfg.tensor_name.format(layer=layer) for layer in cfg.layers]
 
 
-# In[46]:
+# In[ ]:
 
 
 # Load in the model
@@ -85,7 +85,7 @@ with torch.no_grad():
 print(f"Activation size: {activation_size}")
 
 
-# In[ ]:
+# In[4]:
 
 
 # Set target sparsity to 10% of activation_size if not set
@@ -98,11 +98,11 @@ target_upper_sparsity = cfg.sparsity * 1.1
 adjustment_factor = 0.1  # You can set this to whatever you like
 
 
-# In[ ]:
+# In[5]:
 
 
 # Initialize New autoencoder
-from autoencoders.learned_dict import TiedSAE, UntiedSAE, AnthropicSAE
+from autoencoders.learned_dict import TiedSAE, UntiedSAE, AnthropicSAE, TransferSAE
 from torch import nn
 
 
@@ -111,36 +111,51 @@ target_model = AutoModelForCausalLM.from_pretrained(cfg.target_name).cpu()
 model_save_name = cfg.model_name.split("/")[-1]
 save_name = f"{model_save_name}_sp{cfg.sparsity}_r{cfg.ratio}_{tensor_names[0]}"  # trim year
 autoencoder = torch.load(f"trained_models/{save_name}.pt")
+print(f"autoencoder loaded from f{save_name}")
 
 autoencoder.to_device(cfg.device)
 
 
-# In[70]:
+# In[9]:
 
 
 # Initialize New transfer autoencoder
 from autoencoders.learned_dict import TiedSAE, UntiedSAE, AnthropicSAE, TransferSAE
 from torch import nn
 
-transfer_autoencoder = TransferSAE(
-    # n_feats = n_dict_components, 
-    # activation_size=activation_size,
-    autoencoder,
-    decoder=autoencoder.get_learned_dict().detach().clone(),
-    decoder_bias=autoencoder.shift_bias.detach().clone(),
-)
-transfer_autoencoder.to_device(cfg.device)
+modes = ["scale", "rotation", "bias", "free"]
+transfer_autoencoders = []
+for mode in modes:
+    mode_tsae = TransferSAE(
+        # n_feats = n_dict_components, 
+        # activation_size=activation_size,
+        autoencoder,
+        decoder=autoencoder.get_learned_dict().detach().clone(),
+        decoder_bias=autoencoder.shift_bias.detach().clone(),
+        mode=mode,
+    )
+    mode_tsae.to_device(cfg.device)
+    transfer_autoencoders.append(mode_tsae)
+
+optimizers = []
 
 # Set gradient to true for decoder only- only training decoder on transfer
-transfer_autoencoder.set_grad()
-optimizer = torch.optim.Adam(
-    [
-        transfer_autoencoder.decoder,
-        transfer_autoencoder.decoder_bias,
-    ], lr=cfg.lr)
+
+for tsae in transfer_autoencoders:
+    tsae.set_grad()
+    optimizers.append(
+        torch.optim.Adam(tsae.parameters(), lr=cfg.lr)
+    )
 
 
-# In[71]:
+
+# In[10]:
+
+
+transfer_autoencoders
+
+
+# In[ ]:
 
 
 # Wandb setup
@@ -152,10 +167,10 @@ print(f"wandb_run_name: {wandb_run_name}")
 wandb.init(project="sparse coding", config=dict(cfg), name=wandb_run_name)
 
 
-# In[72]:
+# In[ ]:
 
 
-def get_activations(model, inputs):
+def compute_activations(model, inputs):
     acts = []
     for tokens in inputs:
         with torch.no_grad(): # As long as not doing KL divergence, don't need gradients for model
@@ -169,109 +184,146 @@ def get_activations(model, inputs):
     return acts
 
 
-# In[73]:
+# In[ ]:
+
+
+def generate_activations(model, target_model, token_loader, cfg, model_on_gpu=True, num_batches=500):
+    saved_inputs = []
+    for k, (batch) in enumerate(token_loader):
+        saved_inputs.append(batch["input_ids"].to(cfg.device))
+        
+        if (k+1)%num_batches==0:
+            # compute base and target model activations
+            if model_on_gpu:
+                base_activations = compute_activations(model, saved_inputs)
+                model = model.cpu()
+                target_model = target_model.to(cfg.device)
+            target_activations = compute_activations(target_model, saved_inputs)
+            if not model_on_gpu:
+                target_model = target_model.cpu()
+                model = model.to(cfg.device)
+                base_activations = compute_activations(model, saved_inputs)
+            model_on_gpu = not model_on_gpu
+            
+            for base_activation, target_activation in zip(base_activations, target_activations):
+                yield base_activation, target_activation
+
+            # wipe saved inputs
+            saved_inputs = []
+    pass
+
+
+# In[ ]:
 
 
 # Training transfer autoencoder
 token_loader = setup_token_data(cfg, tokenizer, model, seed=cfg.seed)
-dead_features = torch.zeros(transfer_autoencoder.encoder.shape[0])
-max_num_tokens = 100_000_000
+dead_features = torch.zeros(autoencoder.encoder.shape[0])
+# auto_dead_features = torch.zeros(autoencoder.encoder.shape[0])
+
+max_num_tokens = 30_000_000
+log_every=100
 # Freeze model parameters 
 model = model.to(cfg.device)
 target_model = target_model.cpu()
 target_model.eval()
 target_model.requires_grad_(False)
 
-last_decoder = transfer_autoencoder.decoder.clone().detach()
+last_decoders = dict([(modes[i],transfer_autoencoders[i].decoder.clone().detach()) for i in range(len(transfer_autoencoders))])
 model_on_gpu = True
 
 saved_inputs = []
 i = 0 # counts all optimization steps
 num_saved_so_far = 0
-for k, (batch) in enumerate(token_loader):
-    saved_inputs.append(batch["input_ids"].to(cfg.device))
+print("starting loop")
+for (base_activation, target_activation) in tqdm(generate_activations(model, target_model, token_loader, cfg, model_on_gpu=model_on_gpu, num_batches=500), 
+                                                 total=int(32_000_000/(cfg.max_length*cfg.model_batch_size))):
+    c = autoencoder.encode(base_activation.to(cfg.device))
+    x_hat = autoencoder.decode(c)
     
-    if (k+1)%500==0:
-        # compute base and target model activations
-        if model_on_gpu:
-            base_activations = get_activations(model, saved_inputs)
-            model = model.cpu()
-            target_model = target_model.to(cfg.device)
-        target_activations = get_activations(target_model, saved_inputs)
-        if not model_on_gpu:
-            target_model = target_model.cpu()
-            model = model.to(cfg.device)
-            base_activations = get_activations(model, saved_inputs)
-        model_on_gpu = not model_on_gpu
-
-        # wipe saved inputs
-        saved_inputs = []
+    autoencoder_loss = (x_hat - target_activation.to(cfg.device)).pow(2).mean()
+    dead_features += c.sum(dim=0).cpu()
+    
+    wandb_log = {}
+    
+    for tsae, mode, optimizer in zip(transfer_autoencoders, modes, optimizers):
+        x_hat = tsae.decode(c)
         
-        # train autoencoder on activations:
-        for (base_activation, target_activation) in (zip(base_activations, target_activations)):
-            c = transfer_autoencoder.encode(base_activation.to(cfg.device))
-            x_hat = transfer_autoencoder.decode(c)
-            
-            reconstruction_loss = (x_hat - target_activation.to(cfg.device)).pow(2).mean()
-            total_loss = reconstruction_loss # NO L1 LOSS
+        reconstruction_loss = (x_hat - target_activation.to(cfg.device)).pow(2).mean()
+        total_loss = reconstruction_loss # NO L1 LOSS
 
-            dead_features += c.sum(dim=0).cpu()
-            if (i % 500 == 0): # Check here so first check is model w/o change
-                self_similarity = torch.cosine_similarity(transfer_autoencoder.decoder, last_decoder, dim=-1).mean().cpu().item()
-                last_decoder = transfer_autoencoder.decoder.clone().detach()
-                num_tokens_so_far = i*cfg.max_length*cfg.model_batch_size
-                with torch.no_grad():
-                    sparsity = (c != 0).float().mean(dim=0).sum().cpu().item()
-                    # Count number of dead_features are zero
-                    num_dead_features = (dead_features == 0).sum().item()
-                print(f"Sparsity: {sparsity:.1f} | Dead Features: {num_dead_features} | Reconstruction Loss: {reconstruction_loss:.2f} | Tokens: {num_tokens_so_far} | Self Similarity: {self_similarity:.2f}")
-                wandb.log({
-                    'Sparsity': sparsity,
-                    'Dead Features': num_dead_features,
-                    'Reconstruction Loss': reconstruction_loss.item(),
-                    'Tokens': num_tokens_so_far,
-                    'Self Similarity': self_similarity
-                })
-                dead_features = torch.zeros(transfer_autoencoder.encoder.shape[0])
+        if (i % log_every == 0): # Check here so first check is model w/o change
+            self_similarity = torch.cosine_similarity(tsae.decoder, last_decoders[mode], dim=-1).mean().cpu().item()
+            last_decoders[mode] = tsae.decoder.clone().detach()
+            num_tokens_so_far = i*cfg.max_length*cfg.model_batch_size
+            with torch.no_grad():
+                sparsity = (c != 0).float().mean(dim=0).sum().cpu().item()
+            print(f"Reconstruction Loss: {reconstruction_loss:.2f} | Tokens: {num_tokens_so_far} | Self Similarity: {self_similarity:.2f}")
+            wandb_log.update({
+                f'{mode} Reconstruction Loss': reconstruction_loss.item(),
+                f'{mode} Self Similarity': self_similarity
+            })
+
+        optimizer.zero_grad()
+        total_loss.backward()
+        optimizer.step()
+
+    if (i % log_every == 0):
+        with torch.no_grad():
+            sparsity = (c != 0).float().mean(dim=0).sum().cpu().item()
+            # Count number of dead_features are zero
+            num_dead_features = (dead_features == 0).sum().item()
+        print(f"Sparsity: {sparsity:.1f} | Dead Features: {num_dead_features} | Reconstruction Loss: {autoencoder_loss:.2f} | Tokens: {num_tokens_so_far}")
+        dead_features = torch.zeros(autoencoder.encoder.shape[0])
+        wandb_log.update({
+                f'SAE Sparsity': sparsity,
+                f'Dead Features': num_dead_features,
+                f'SAE Reconstruction Loss': autoencoder_loss.item(),
+                f'Tokens': num_tokens_so_far,
+            })
+        wandb.log(wandb_log)
+    i+=1
+    
+    if ((i+2) % 2000==0): # save periodically but before big changes
+        for tsae, mode in zip(transfer_autoencoders, modes):
+            model_save_name = cfg.model_name.split("/")[-1]
+            save_name = f"{model_save_name}_transfer_{mode}_sp{cfg.sparsity}_r{cfg.ratio}_{tensor_names[0]}_ckpt{num_saved_so_far}" 
+
+            # Make directory traiend_models if it doesn't exist
+            import os
+            if not os.path.exists("trained_models"):
+                os.makedirs("trained_models")
+            # Save model
+            torch.save(tsae, f"trained_models/{save_name}.pt")
+        
+        num_saved_so_far += 1
                 
-                if(num_tokens_so_far > max_num_tokens):
-                    print(f"Reached max number of tokens: {max_num_tokens}")
-                    break
-
-            optimizer.zero_grad()
-            total_loss.backward()
-            optimizer.step()
-            i+=1
-            
-            if ((i+2) % 10_000==0): # save periodically but before big changes
-                model_save_name = cfg.model_name.split("/")[-1]
-                save_name = f"{model_save_name}_transfer_sp{cfg.sparsity}_r{cfg.ratio}_{tensor_names[0]}_ckpt{num_saved_so_far}" 
-
-                # Make directory traiend_models if it doesn't exist
-                import os
-                if not os.path.exists("trained_models"):
-                    os.makedirs("trained_models")
-                # Save model
-                torch.save(autoencoder, f"trained_models/{save_name}.pt")
-                
-                num_saved_so_far += 1
+    
+    num_tokens_so_far = i*cfg.max_length*cfg.model_batch_size
+    if(num_tokens_so_far > max_num_tokens):
+        print(f"Reached max number of tokens: {max_num_tokens}")
+        break
+    
 
 
 # In[ ]:
 
 
-model_save_name = cfg.target_name.split("/")[-1]
-save_name = f"{model_save_name}_transfer_sp{cfg.sparsity}_r{cfg.ratio}_{tensor_names[0]}"  # trim year
+# Save model at end
 
-# Make directory traiend_models if it doesn't exist
-import os
-if not os.path.exists("trained_models"):
-    os.makedirs("trained_models")
-# Save model
-torch.save(transfer_autoencoder, f"trained_models/{save_name}.pt")
+for tsae, mode in zip(transfer_autoencoders, modes):
+    model_save_name = cfg.model_name.split("/")[-1]
+    save_name = f"{model_save_name}_transfer_{mode}_sp{cfg.sparsity}_r{cfg.ratio}_{tensor_names[0]}" 
+
+    # Make directory traiend_models if it doesn't exist
+    import os
+    if not os.path.exists("trained_models"):
+        os.makedirs("trained_models")
+    # Save model
+    torch.save(tsae, f"trained_models/{save_name}.pt")
 
 
-# In[74]:
+# In[ ]:
 
 
 wandb.finish()

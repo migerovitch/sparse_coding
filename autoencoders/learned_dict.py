@@ -163,14 +163,28 @@ class AnthropicSAE(LearnedDict):
         return x_hat + self.shift_bias
 
 class TransferSAE(LearnedDict):
-    def __init__(self, autoencoder, decoder, decoder_bias):
+    def __init__(self, autoencoder, decoder, decoder_bias=None, mode="free"):
+        """
+        mode: "scale" (only train a scaling factor), 
+        "rotation" (only train a direction), 
+        "bias" (just train bias),
+        "free" (train everything), 
+        """
+        assert mode in ["scale", "rotation", "bias", "free"], "mode not of right type"
+        self.mode = mode
         self.encoder = autoencoder.encoder
         self.encoder_bias = autoencoder.encoder_bias
         self.shift_bias = autoencoder.shift_bias
         self.n_feats, self.activation_size = self.encoder.shape
         
         self.decoder = decoder
-        self.decoder_bias = decoder_bias
+        
+        self.scale = torch.ones_like(self.encoder_bias)
+        
+        if decoder_bias is None:
+            self.decoder_bias = autoencoder.shift_bias
+        else:
+            self.decoder_bias = decoder_bias
         
 
     def get_learned_dict(self):
@@ -193,8 +207,31 @@ class TransferSAE(LearnedDict):
         self.encoder_bias.requires_grad = False
         self.shift_bias.requires_grad = False
         
-        self.decoder.requires_grad = True
-        self.decoder_bias.requires_grad = True
+        self.decoder.requires_grad = False
+        self.decoder_bias.requires_grad = False
+        self.scale.requires_grad = False
+
+        if self.mode=="scale":
+            self.scale.requires_grad = True
+
+        if self.mode=="rotation":
+            self.decoder.requires_grad=True
+
+        if self.mode=="bias":
+            self.decoder_bias.requires_grad=True
+
+        if self.mode=="free":
+            self.decoder.requires_grad = True
+            self.decoder_bias.requires_grad = True
+            self.scale.requires_grad = True
+        
+    
+    def parameters(self):
+        params = []
+        for param in [self.encoder, self.encoder_bias, self.shift_bias, self.decoder,self.decoder_bias, self.scale]:
+            if param.requires_grad:
+                params.append(param)
+        return params
 
     def encode(self, batch):
         batch = batch - self.shift_bias
@@ -204,7 +241,9 @@ class TransferSAE(LearnedDict):
         return c
     
     def decode(self, code):
-        x_hat = torch.einsum("nd,bn->bd", self.decoder, code)
+        learned_dict = self.get_learned_dict()
+        scaled_features = code * self.scale # element-wise scale
+        x_hat = torch.einsum("nd,bn->bd", learned_dict, scaled_features)
         return x_hat + self.decoder_bias
 
 
