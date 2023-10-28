@@ -16,10 +16,9 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 
 cfg = dotdict()
-# models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft"
+# models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft" , "Dahoas/gptj-rm-static"
 # cfg.model_name="lomahony/eleuther-pythia6.9b-hh-sft"
-cfg.model_name="EleutherAI/pythia-6.9b"
-cfg.target_name="lomahony/eleuther-pythia6.9b-hh-sft"
+cfg.model_name="Dahoas/gptj-rm-static"
 cfg.layers=[10]
 cfg.setting="residual"
 cfg.tensor_name="gpt_neox.layers.{layer}"
@@ -166,7 +165,7 @@ wandb.init(project="sparse coding", config=dict(cfg), name=wandb_run_name)
 time_since_activation = torch.zeros(autoencoder.encoder.shape[0])
 total_activations = torch.zeros(autoencoder.encoder.shape[0])
 max_num_tokens = 30_000_000
-save_every = 5_000_000
+save_every = 2_500
 num_saved_so_far = 0
 # Freeze model parameters 
 model.eval()
@@ -194,7 +193,7 @@ for i, batch in enumerate(tqdm(token_loader)):
     time_since_activation += 1
     time_since_activation = time_since_activation * (c.sum(dim=0).cpu()==0)
     total_activations += c.sum(dim=0).cpu()
-    if ((i+1) % 10 == 0): # Check here so first check is model w/o change
+    if ((i) % 100 == 0): # Check here so first check is model w/o change
         # self_similarity = torch.cosine_similarity(c, last_encoder, dim=-1).mean().cpu().item()
         # Above is wrong, should be similarity between encoder and last encoder
         self_similarity = torch.cosine_similarity(autoencoder.encoder, last_encoder, dim=-1).mean().cpu().item()
@@ -313,7 +312,7 @@ for i, batch in enumerate(tqdm(token_loader)):
         
     #     total_activations = torch.zeros(autoencoder.encoder.shape[0])
 
-    if ((i+2) % 10_000==0): # save periodically but before big changes
+    if ((i+2) % save_every ==0): # save periodically but before big changes
         model_save_name = cfg.model_name.split("/")[-1]
         save_name = f"{model_save_name}_sp{cfg.sparsity}_r{cfg.ratio}_{tensor_names[0]}_ckpt{num_saved_so_far}"  # trim year
 

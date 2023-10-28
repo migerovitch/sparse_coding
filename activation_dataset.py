@@ -122,7 +122,7 @@ def read_from_pile(address: str, max_lines: int = 100_000, start_line: int = 0):
             yield json.loads(line)
 
 
-def make_sentence_dataset(dataset_name: str, max_lines: int = 20_000, start_line: int = 0):
+def make_sentence_dataset(dataset_name: str, max_lines: int = 20_000, start_line: int = 0, split="train"):
     """Returns a dataset from the Huggingface Datasets library."""
     if dataset_name == "EleutherAI/pile":
         if not os.path.exists("pile0"):
@@ -132,7 +132,7 @@ def make_sentence_dataset(dataset_name: str, max_lines: int = 20_000, start_line
                 os.system("unzstd pile0.zst")
         dataset = Dataset.from_list(list(read_from_pile("pile0", max_lines=max_lines, start_line=start_line)))
     else:
-        dataset = load_dataset(dataset_name, split="train")#, split=f"train[{start_line}:{start_line + max_lines}]")
+        dataset = load_dataset(dataset_name, split=split)#, split=f"train[{start_line}:{start_line + max_lines}]")
     return dataset
 
 
@@ -461,8 +461,8 @@ def setup_data(
         return n_datapoints
 
 
-def setup_token_data(cfg, tokenizer, model, seed=1):
-    sentence_dataset = make_sentence_dataset(cfg.dataset_name)
+def setup_token_data(cfg, tokenizer, model, seed=1, split="train"):
+    sentence_dataset = make_sentence_dataset(cfg.dataset_name, split=split)
     tokenized_sentence_dataset, bits_per_byte = chunk_and_tokenize(sentence_dataset, tokenizer, max_length=cfg.max_length)
 
     random.seed(seed)
