@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 import torch 
@@ -16,12 +16,14 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 
 cfg = dotdict()
-# models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft"
-cfg.model_name="EleutherAI/pythia-6.9b"
-cfg.target_name="lomahony/eleuther-pythia6.9b-hh-sft"
+# models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft", "reciprocate/dahoas-gptj-rm-static"
+cfg.model_name="reciprocate/dahoas-gptj-rm-static"
+cfg.target_name="usvsnsp/pythia-6.9b-ppo"
 cfg.layers=[10]
 cfg.setting="residual"
-cfg.tensor_name="gpt_neox.layers.{layer}"
+# cfg.tensor_name="gpt_neox.layers.{layer}"
+cfg.tensor_name="transformer.h.{layer}"
+cfg.target_tensor_name="gpt_neox.layers.{layer}"
 original_l1_alpha = 8e-4
 cfg.l1_alpha=original_l1_alpha
 cfg.sparsity=None
@@ -38,10 +40,11 @@ cfg.seed = 0
 # cfg.device="cpu"
 
 
-# In[2]:
+# In[ ]:
 
 
 tensor_names = [cfg.tensor_name.format(layer=layer) for layer in cfg.layers]
+target_tensor_names = [cfg.target_tensor_name.format(layer=layer) for layer in cfg.layers]
 
 
 # In[ ]:
@@ -85,7 +88,7 @@ with torch.no_grad():
 print(f"Activation size: {activation_size}")
 
 
-# In[4]:
+# In[ ]:
 
 
 # Set target sparsity to 10% of activation_size if not set
@@ -98,7 +101,7 @@ target_upper_sparsity = cfg.sparsity * 1.1
 adjustment_factor = 0.1  # You can set this to whatever you like
 
 
-# In[5]:
+# In[ ]:
 
 
 # Initialize New autoencoder
@@ -116,7 +119,7 @@ print(f"autoencoder loaded from f{save_name}")
 autoencoder.to_device(cfg.device)
 
 
-# In[9]:
+# In[ ]:
 
 
 # Initialize New transfer autoencoder
@@ -149,12 +152,6 @@ for tsae in transfer_autoencoders:
 
 
 
-# In[10]:
-
-
-transfer_autoencoders
-
-
 # In[ ]:
 
 
@@ -170,11 +167,11 @@ wandb.init(project="sparse coding", config=dict(cfg), name=wandb_run_name)
 # In[ ]:
 
 
-def compute_activations(model, inputs):
+def compute_activations(model, inputs, layer_name):
     acts = []
     for tokens in inputs:
         with torch.no_grad(): # As long as not doing KL divergence, don't need gradients for model
-            with Trace(model, tensor_names[0]) as ret:
+            with Trace(model, layer_name) as ret:
                 _ = model(tokens)
                 representation = ret.output
                 if(isinstance(representation, tuple)):
@@ -195,14 +192,14 @@ def generate_activations(model, target_model, token_loader, cfg, model_on_gpu=Tr
         if (k+1)%num_batches==0:
             # compute base and target model activations
             if model_on_gpu:
-                base_activations = compute_activations(model, saved_inputs)
+                base_activations = compute_activations(model, saved_inputs, layer_name=tensor_names[0])
                 model = model.cpu()
                 target_model = target_model.to(cfg.device)
-            target_activations = compute_activations(target_model, saved_inputs)
+            target_activations = compute_activations(target_model, saved_inputs, layer_name=target_tensor_names[0])
             if not model_on_gpu:
                 target_model = target_model.cpu()
                 model = model.to(cfg.device)
-                base_activations = compute_activations(model, saved_inputs)
+                base_activations = compute_activations(model, saved_inputs, layer_name=tensor_names[0])
             model_on_gpu = not model_on_gpu
             
             for base_activation, target_activation in zip(base_activations, target_activations):
@@ -237,7 +234,7 @@ i = 0 # counts all optimization steps
 num_saved_so_far = 0
 print("starting loop")
 for (base_activation, target_activation) in tqdm(generate_activations(model, target_model, token_loader, cfg, model_on_gpu=model_on_gpu, num_batches=500), 
-                                                 total=int(32_000_000/(cfg.max_length*cfg.model_batch_size))):
+                                                 total=int(max_num_tokens/(cfg.max_length*cfg.model_batch_size))):
     c = autoencoder.encode(base_activation.to(cfg.device))
     x_hat = autoencoder.decode(c)
     

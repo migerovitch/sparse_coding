@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 import torch 
@@ -16,12 +16,13 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 
 cfg = dotdict()
-# models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft" , "Dahoas/gptj-rm-static"
+# models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft" , "Dahoas/gptj-rm-static", "reciprocate/dahoas-gptj-rm-static"
 # cfg.model_name="lomahony/eleuther-pythia6.9b-hh-sft"
-cfg.model_name="Dahoas/gptj-rm-static"
+cfg.model_name="reciprocate/dahoas-gptj-rm-static"
 cfg.layers=[10]
 cfg.setting="residual"
-cfg.tensor_name="gpt_neox.layers.{layer}"
+# cfg.tensor_name="gpt_neox.layers.{layer}"
+cfg.tensor_name="transformer.h.{layer}"
 original_l1_alpha = 8e-4
 cfg.l1_alpha=original_l1_alpha
 cfg.sparsity=None
@@ -38,17 +39,17 @@ cfg.seed = 0
 # cfg.device="cpu"
 
 
-# In[45]:
+# In[ ]:
 
 
 tensor_names = [cfg.tensor_name.format(layer=layer) for layer in cfg.layers]
 
 
-# In[2]:
+# In[ ]:
 
 
 # Load in the model
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification, GPTJForSequenceClassification
 model = AutoModelForCausalLM.from_pretrained(cfg.model_name)
 model = model.to(cfg.device)
 tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
@@ -338,7 +339,7 @@ for i, batch in enumerate(tqdm(token_loader)):
     #         # print(f"Sparsity: {sparsity:.1f} | l1_alpha: {cfg.l1_alpha:.2e}")
 
 
-# In[24]:
+# In[ ]:
 
 
 model_save_name = cfg.model_name.split("/")[-1]
@@ -352,7 +353,7 @@ if not os.path.exists("trained_models"):
 torch.save(autoencoder, f"trained_models/{save_name}.pt")
 
 
-# In[18]:
+# In[ ]:
 
 
 wandb.finish()
