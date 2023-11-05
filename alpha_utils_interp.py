@@ -270,7 +270,7 @@ def tokens_and_activations_to_html(toks, activations, tokenizer, logit_diffs=Non
                 logit_diffs_act = logit_diffs[seq_ind][act_ind]
                 _, logit_background_color = value_to_color(logit_diffs_act, logit_max_value, logit_min_value)
                 highlighted_text.append(f'<div style="display: block; margin-right: {text_spacing}; height: 10px; background-color:{logit_background_color}; text-align: center;"></div></div>')
-        if(model_type=="reward_model"):
+        if(logit_diffs is not None and model_type=="reward_model"):
             reward_change = logit_diffs[seq_ind].item()
             text_color, background_color = value_to_color(reward_change, 10, -10)
             highlighted_text.append(f'<br><span>Reward: </span><span style="background-color:{background_color};margin-right: {text_spacing}; color:rgb({text_color})">{reward_change:.2f}</span>')
