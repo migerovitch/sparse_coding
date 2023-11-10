@@ -16,9 +16,9 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 
 cfg = dotdict()
-# models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft", "reciprocate/dahoas-gptj-rm-static"
-cfg.model_name="reciprocate/dahoas-gptj-rm-static"
-cfg.target_name="usvsnsp/pythia-6.9b-ppo"
+# models: "EleutherAI/pythia-6.9b", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft", "reciprocate/dahoas-gptj-rm-static"
+cfg.model_name="lomahony/eleuther-pythia6.9b-hh-sft"
+cfg.target_name="EleutherAI/pythia-6.9b"
 cfg.layers=[10]
 cfg.setting="residual"
 # cfg.tensor_name="gpt_neox.layers.{layer}"
@@ -222,6 +222,7 @@ max_num_tokens = 30_000_000
 log_every=100
 # Freeze model parameters 
 model = model.to(cfg.device)
+model.eval()
 target_model = target_model.cpu()
 target_model.eval()
 target_model.requires_grad_(False)

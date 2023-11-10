@@ -192,8 +192,7 @@ class TransferSAE(LearnedDict):
         return self.decoder / torch.clamp(norms, 1e-8)[:, None]
     
     def get_feature_scales(self):
-        norms = torch.norm(self.decoder, 2, dim=-1)
-        return norms
+        return self.scale
 
     def to_device(self, device):
         self.encoder = self.encoder.to(device)
