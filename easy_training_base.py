@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[1]:
 
 
 import torch 
@@ -16,13 +16,13 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 
 cfg = dotdict()
-# models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft" , "Dahoas/gptj-rm-static", "reciprocate/dahoas-gptj-rm-static"
+# models: "EleutherAI/pythia-6.9b", "lomahony/eleuther-pythia6.9b-hh-sft", "usvsnsp/pythia-6.9b-ppo", "Dahoas/gptj-rm-static", "reciprocate/dahoas-gptj-rm-static"
 # cfg.model_name="lomahony/eleuther-pythia6.9b-hh-sft"
-cfg.model_name="reciprocate/dahoas-gptj-rm-static"
+cfg.model_name="EleutherAI/pythia-6.9b"
 cfg.layers=[10]
 cfg.setting="residual"
-# cfg.tensor_name="gpt_neox.layers.{layer}"
-cfg.tensor_name="transformer.h.{layer}"
+# cfg.tensor_name="gpt_neox.layers.{layer}" or "transformer.h.{layer}"
+cfg.tensor_name="gpt_neox.layers.{layer}"
 original_l1_alpha = 8e-4
 cfg.l1_alpha=original_l1_alpha
 cfg.sparsity=None
@@ -39,13 +39,13 @@ cfg.seed = 0
 # cfg.device="cpu"
 
 
-# In[ ]:
+# In[2]:
 
 
 tensor_names = [cfg.tensor_name.format(layer=layer) for layer in cfg.layers]
 
 
-# In[ ]:
+# In[3]:
 
 
 # Load in the model
@@ -165,15 +165,15 @@ wandb.init(project="sparse coding", config=dict(cfg), name=wandb_run_name)
 
 time_since_activation = torch.zeros(autoencoder.encoder.shape[0])
 total_activations = torch.zeros(autoencoder.encoder.shape[0])
-max_num_tokens = 30_000_000
-save_every = 2_500
+max_num_tokens = 100_000_000
+save_every = 10_000
 num_saved_so_far = 0
 # Freeze model parameters 
 model.eval()
 model.requires_grad_(False)
 model.to(cfg.device)
 last_encoder = autoencoder.encoder.clone().detach()
-for i, batch in enumerate(tqdm(token_loader)):
+for i, batch in enumerate(tqdm(token_loader,total=int(max_num_tokens/(cfg.max_length*cfg.model_batch_size)))):
     tokens = batch["input_ids"].to(cfg.device)
     with torch.no_grad(): # As long as not doing KL divergence, don't need gradients for model
         with Trace(model, tensor_names[0]) as ret:

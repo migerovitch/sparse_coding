@@ -16,13 +16,13 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 
 cfg = dotdict()
-# models: "EleutherAI/pythia-70m-deduped", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft", "reciprocate/dahoas-gptj-rm-static"
-cfg.model_name="reciprocate/dahoas-gptj-rm-static"
-cfg.target_name="usvsnsp/pythia-6.9b-ppo"
+# models: "EleutherAI/pythia-6.9b", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft", "reciprocate/dahoas-gptj-rm-static"
+cfg.model_name="lomahony/eleuther-pythia6.9b-hh-sft"
+cfg.target_name="EleutherAI/pythia-6.9b"
 cfg.layers=[10]
 cfg.setting="residual"
-# cfg.tensor_name="gpt_neox.layers.{layer}"
-cfg.tensor_name="transformer.h.{layer}"
+# cfg.tensor_name="gpt_neox.layers.{layer}" or "transformer.h.{layer}"
+cfg.tensor_name="gpt_neox.layers.{layer}"
 cfg.target_tensor_name="gpt_neox.layers.{layer}"
 original_l1_alpha = 8e-4
 cfg.l1_alpha=original_l1_alpha
@@ -36,18 +36,18 @@ cfg.reconstruction=False
 cfg.dataset_name="Elriggs/openwebtext-100k"
 cfg.device="cuda:0"
 cfg.ratio = 4
-cfg.seed = 0
+cfg.seed = 10
 # cfg.device="cpu"
 
 
-# In[3]:
+# In[ ]:
 
 
 tensor_names = [cfg.tensor_name.format(layer=layer) for layer in cfg.layers]
 target_tensor_names = [cfg.target_tensor_name.format(layer=layer) for layer in cfg.layers]
 
 
-# In[4]:
+# In[ ]:
 
 
 # Load in the model
@@ -57,7 +57,7 @@ model = model.to(cfg.device)
 tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
 
 
-# In[6]:
+# In[ ]:
 
 
 # Download the dataset
@@ -67,7 +67,7 @@ num_tokens = cfg.max_length*cfg.model_batch_size*len(token_loader)
 print(f"Number of tokens: {num_tokens}")
 
 
-# In[8]:
+# In[ ]:
 
 
 # Run 1 datapoint on model to get the activation size
@@ -87,7 +87,7 @@ with torch.no_grad():
 print(f"Activation size: {activation_size}")
 
 
-# In[9]:
+# In[ ]:
 
 
 # Set target sparsity to 10% of activation_size if not set
@@ -100,7 +100,7 @@ target_upper_sparsity = cfg.sparsity * 1.1
 adjustment_factor = 0.1  # You can set this to whatever you like
 
 
-# In[10]:
+# In[ ]:
 
 
 # Load base and target autoencoders
@@ -110,18 +110,18 @@ from torch import nn
 
 target_model = AutoModelForCausalLM.from_pretrained(cfg.target_name).cpu()
 
-save_name = f"rm_sae_gptj"  # trim year
+save_name = f"sft_sae_6b"  # trim year
 autoencoder = torch.load(f"trained_models/{save_name}.pt")
 print(f"autoencoder loaded from f{save_name}")
 autoencoder.to_device(cfg.device)
 
-save_name = f"ppo_sae_6b" 
+save_name = f"base_sae_6b" 
 target_autoencoder = torch.load(f"trained_models/{save_name}.pt")
 print(f"target_autoencoder loaded from f{save_name}")
 target_autoencoder.to_device(cfg.device)
 
 
-# In[11]:
+# In[ ]:
 
 
 # Initialize New transfer autoencoder
@@ -139,25 +139,25 @@ for mode in modes:
     #     decoder_bias=autoencoder.shift_bias.detach().clone(),
     #     mode=mode,
     # )
-    mode_tsae = torch.load(f"trained_models/transfer_rm_ppo_6b_{mode}.pt")
+    mode_tsae = torch.load(f"/root/sparse_coding/trained_models/eleuther-pythia6.9b-hh-sft_pythia-6.9b_{mode}_r4_gpt_neox.layers.10_ckpt6.pt") #trained_models/transfer_base_sft_6b_{mode}_6.pt
     mode_tsae.to_device(cfg.device)
     transfer_autoencoders.append(mode_tsae)
 
 
 
-# In[32]:
+# In[ ]:
 
 
 # Wandb setup
 secrets = json.load(open("secrets.json"))
 wandb.login(key=secrets["wandb_key"])
 start_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-wandb_run_name = f"testing_{cfg.target_name}_transfer_{start_time[4:]}"  # trim year
+wandb_run_name = f"testing_{cfg.model_name}_{cfg.target_name}_{start_time[4:]}"  # trim year
 print(f"wandb_run_name: {wandb_run_name}")
 wandb.init(project="sparse coding", config=dict(cfg), name=wandb_run_name)
 
 
-# In[14]:
+# In[ ]:
 
 
 def compute_activations(model, inputs, layer_name):
@@ -174,7 +174,7 @@ def compute_activations(model, inputs, layer_name):
     return acts
 
 
-# In[15]:
+# In[ ]:
 
 
 def generate_activations(model, target_model, token_loader, cfg, model_on_gpu=True, num_batches=500):
@@ -203,14 +203,14 @@ def generate_activations(model, target_model, token_loader, cfg, model_on_gpu=Tr
     pass
 
 
-# In[48]:
+# In[ ]:
 
 
 # Testing transfer autoencoders
 token_loader = setup_token_data(cfg, tokenizer, model, seed=cfg.seed, split="train")
-dead_features = torch.zeros(autoencoder.encoder.shape[0])
-target_dead_features = torch.zeros(autoencoder.encoder.shape[0])
-sft_dead_features = torch.zeros(autoencoder.encoder.shape[0])
+dead_features = torch.zeros(autoencoder.encoder.shape[0]) # dead features of base SAE on base
+target_dead_features = torch.zeros(autoencoder.encoder.shape[0]) # dead features of target SAE on base
+sft_dead_features = torch.zeros(autoencoder.encoder.shape[0]) # dead features of target SAE on target
 
 max_num_tokens = 300_000
 log_every=100
@@ -317,9 +317,9 @@ for (base_activation, target_activation) in tqdm(generate_activations(model, tar
             num_sft_dead_features = (sft_dead_features == 0).sum().item()
             
         wandb_log.update({  # Base only and Target only losses
-                f'Sparsity on SFT': sft_sparsity,
-                f'Target Sparsity on SFT': target_sft_sparsity,
-                f'SFT Dead Features': num_sft_dead_features,
+                f'Sparsity on Target': sft_sparsity,
+                f'Target Sparsity on Target': target_sft_sparsity,
+                f'Target Dead Features': num_sft_dead_features,
             })
         wandb.log(wandb_log)
     i+=1
@@ -333,7 +333,7 @@ for (base_activation, target_activation) in tqdm(generate_activations(model, tar
     
 
 
-# In[49]:
+# In[ ]:
 
 
 # log total average loss and finish wandb
@@ -344,8 +344,8 @@ wandb_log = {
     'SAE Average Loss on Base': auto_base_loss/i,
     'Target SAE Average Loss on Base': target_base_loss/i,
     
-    'SAE Average Loss on SFT': auto_sft_loss/i,
-    'Target SAE Average Loss on SFT': target_sft_loss/i,
+    'SAE Average Loss on Target': auto_sft_loss/i,
+    'Target SAE Average Loss on Target': target_sft_loss/i,
     }
 for mode in modes:
     wandb_log.update({  # Target SAE log
@@ -356,7 +356,7 @@ wandb.log(wandb_log)
 wandb.finish()
 
 
-# In[51]:
+# In[ ]:
 
 
 import pprint
@@ -365,7 +365,7 @@ import pprint
 pprint.pprint(wandb_log)
 
 
-# In[46]:
+# In[ ]:
 
 
 auto_and_target_losses = [
@@ -380,7 +380,7 @@ auto_and_target_losses = [
 print([x/i for x in auto_and_target_losses])
 
 
-# In[59]:
+# In[ ]:
 
 
 # save dead features
@@ -388,9 +388,9 @@ import os
 if not os.path.exists("trained_models"):
     os.makedirs("trained_models")
 # Save model
-torch.save(dead_features, f"trained_models/base_dead_features.pt")
-torch.save(target_dead_features, f"trained_models/target_dead_features.pt")
-torch.save(sft_dead_features, f"trained_models/sft_dead_features.pt")
+# torch.save(dead_features, f"trained_models/base_dead_features.pt")
+torch.save(target_dead_features, f"trained_models/base_on_sft_dead_features.pt")
+# torch.save(sft_dead_features, f"trained_models/sft_dead_features.pt")
 
 
 # In[ ]:
