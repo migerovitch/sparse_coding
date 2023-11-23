@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[1]:
 
 
 import torch 
@@ -17,9 +17,9 @@ import matplotlib.pyplot as plt
 
 cfg = dotdict()
 # models: "EleutherAI/pythia-6.9b", "usvsnsp/pythia-6.9b-ppo", "lomahony/eleuther-pythia6.9b-hh-sft", "reciprocate/dahoas-gptj-rm-static"
-cfg.model_name="EleutherAI/pythia-6.9b"
-cfg.target_name="lomahony/eleuther-pythia6.9b-hh-sft"
-cfg.layers=[10]
+cfg.model_name="EleutherAI/pythia-70m"
+cfg.target_name="lomahony/pythia-70m-helpful-sft"
+cfg.layers=[4]
 cfg.setting="residual"
 # cfg.tensor_name="gpt_neox.layers.{layer}"
 cfg.tensor_name="gpt_neox.layers.{layer}" # "gpt_neox.layers.{layer}" (pythia), "transformer.h.{layer}" (rm)
@@ -107,8 +107,12 @@ adjustment_factor = 0.1  # You can set this to whatever you like
 def autoencoder_name_from_llm_name(llm_name):
     if llm_name == "EleutherAI/pythia-6.9b":
         return "base_sae_6b"
+    if llm_name == "EleutherAI/pythia-70m":
+        return "base_sae_70m"
     if llm_name == "lomahony/eleuther-pythia6.9b-hh-sft":
         return "sft_sae_6b"
+    if llm_name == "lomahony/pythia-70m-helpful-sft":
+        return "sft_sae_70m"
     if llm_name == "usvsnsp/pythia-6.9b-ppo":
         return "ppo_sae_6b"
     if llm_name == "reciprocate/dahoas-gptj-rm-static":

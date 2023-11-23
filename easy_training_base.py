@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 import torch 
@@ -18,8 +18,8 @@ import matplotlib.pyplot as plt
 cfg = dotdict()
 # models: "EleutherAI/pythia-6.9b", "lomahony/eleuther-pythia6.9b-hh-sft", "usvsnsp/pythia-6.9b-ppo", "Dahoas/gptj-rm-static", "reciprocate/dahoas-gptj-rm-static"
 # cfg.model_name="lomahony/eleuther-pythia6.9b-hh-sft"
-cfg.model_name="EleutherAI/pythia-6.9b"
-cfg.layers=[10]
+cfg.model_name="EleutherAI/pythia-70m"
+cfg.layers=[4]
 cfg.setting="residual"
 # cfg.tensor_name="gpt_neox.layers.{layer}" or "transformer.h.{layer}"
 cfg.tensor_name="gpt_neox.layers.{layer}"
@@ -39,13 +39,13 @@ cfg.seed = 0
 # cfg.device="cpu"
 
 
-# In[2]:
+# In[ ]:
 
 
 tensor_names = [cfg.tensor_name.format(layer=layer) for layer in cfg.layers]
 
 
-# In[3]:
+# In[ ]:
 
 
 # Load in the model
@@ -160,7 +160,7 @@ print(f"wandb_run_name: {wandb_run_name}")
 wandb.init(project="sparse coding", config=dict(cfg), name=wandb_run_name)
 
 
-# In[ ]:
+# In[16]:
 
 
 time_since_activation = torch.zeros(autoencoder.encoder.shape[0])
@@ -327,16 +327,16 @@ for i, batch in enumerate(tqdm(token_loader,total=int(max_num_tokens/(cfg.max_le
         num_saved_so_far += 1
 
     # Running sparsity check
-    # num_tokens_so_far = i*cfg.max_length*cfg.model_batch_size
-    # if(num_tokens_so_far > 200000):
-    #     if(i % 100 == 0):
-    #         with torch.no_grad():
-    #             sparsity = (c != 0).float().mean(dim=0).sum().cpu().item()
-    #         if sparsity > target_upper_sparsity:
-    #             cfg.l1_alpha *= (1 + adjustment_factor)
-    #         elif sparsity < target_lower_sparsity:
-    #             cfg.l1_alpha *= (1 - adjustment_factor)
-    #         # print(f"Sparsity: {sparsity:.1f} | l1_alpha: {cfg.l1_alpha:.2e}")
+    num_tokens_so_far = i*cfg.max_length*cfg.model_batch_size
+    if(num_tokens_so_far > 200000):
+        if(i % 100 == 0):
+            with torch.no_grad():
+                sparsity = (c != 0).float().mean(dim=0).sum().cpu().item()
+            if sparsity > target_upper_sparsity:
+                cfg.l1_alpha *= (1 + adjustment_factor)
+            elif sparsity < target_lower_sparsity:
+                cfg.l1_alpha *= (1 - adjustment_factor)
+            # print(f"Sparsity: {sparsity:.1f} | l1_alpha: {cfg.l1_alpha:.2e}")
 
 
 # In[ ]:
