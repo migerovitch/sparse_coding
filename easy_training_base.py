@@ -18,7 +18,8 @@ import matplotlib.pyplot as plt
 cfg = dotdict()
 # models: "EleutherAI/pythia-6.9b", "lomahony/eleuther-pythia6.9b-hh-sft", "usvsnsp/pythia-6.9b-ppo", "Dahoas/gptj-rm-static", "reciprocate/dahoas-gptj-rm-static"
 # cfg.model_name="lomahony/eleuther-pythia6.9b-hh-sft"
-cfg.model_name="EleutherAI/pythia-70m"
+# "EleutherAI/pythia-70m", "lomahony/pythia-70m-helpful-sft", "lomahony/eleuther-pythia70m-hh-sft"
+cfg.model_name="lomahony/eleuther-pythia70m-hh-sft"
 cfg.layers=[4]
 cfg.setting="residual"
 # cfg.tensor_name="gpt_neox.layers.{layer}" or "transformer.h.{layer}"
@@ -160,7 +161,7 @@ print(f"wandb_run_name: {wandb_run_name}")
 wandb.init(project="sparse coding", config=dict(cfg), name=wandb_run_name)
 
 
-# In[16]:
+# In[ ]:
 
 
 time_since_activation = torch.zeros(autoencoder.encoder.shape[0])
@@ -357,4 +358,10 @@ torch.save(autoencoder, f"trained_models/{save_name}.pt")
 
 
 wandb.finish()
+
+
+# In[ ]:
+
+
+
 
